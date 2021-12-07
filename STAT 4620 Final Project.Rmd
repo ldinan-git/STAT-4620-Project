@@ -1,0 +1,1124 @@
+---
+title: "STAT 4620 Final Project"
+author: "Luke Dinan"
+date: "12/6/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, set.seed(333)}
+knitr::opts_chunk$set(cache = T)
+```
+
+
+```{r, message = FALSE, warning = FALSE}
+options(scipen=999)
+library(tidyverse)
+library(magrittr)
+library(glmnet)
+library(data.table)
+library(dbarts)
+library(readr)
+library(randomForest)
+library(caret)
+library(gbm)
+library(corrplot)
+```
+
+```{r}
+load("Ames/ames.Rdata")
+train$Garage.Yr.Blt <- as.numeric(train$Garage.Yr.Blt)
+test <- rbind(train[1,], test)
+test <- test[-1,]
+# Remove order/pid
+train <- train[,-c(1, 2)]
+test <- test[,-c(1, 2)]
+```
+
+# Background
+
+The data set contains information from the Ames Assessor’s Office used in computing assessed values for individual residential properties sold in Ames, IA from 2006 to 2010.
+
+Tab characters are used to separate variables in the data file. The data has 82 columns which include 23 nominal, 23 ordinal, 14 discrete, and 20 continuous variables (and 2 additional observation identifiers). 2 columns - order and pid - are for identification and are removed for the prediction.
+
+### EDA Results
+
+Our early EDA results involved cleaning the data and finding relationships among the predictors and response variable. 
+
+To start, a large amount of the data included NA values for columns that did not have relevant information. For example, if the house did not have a pool, the pool square footage was encoded as NA. The below code fixes this in both the training and testing set for categorical variables.
+
+### Data Preparation
+
+##### Replace NA Categorical
+
+Training Data: replace categorical NA with more descriptive value
+```{r}
+train$Alley <- ifelse(is.na(train$Alley), "None", train$Alley)
+train$Fireplace.Qu <- ifelse(is.na(train$Fireplace.Qu), "None", train$Fireplace.Qu)
+train$Bsmt.Qual <- ifelse(is.na(train$Bsmt.Qual), "No Basement", train$Bsmt.Qual)
+train$Bsmt.Cond <- ifelse(is.na(train$Bsmt.Cond), "No Basement", train$Bsmt.Cond)
+train$Bsmt.Exposure <- ifelse(is.na(train$Bsmt.Exposure), "No Basement", train$Bsmt.Exposure)
+train$BsmtFin.Type.1 <- ifelse(is.na(train$BsmtFin.Type.1), "No Basement", train$BsmtFin.Type.1)
+train$BsmtFin.Type.2 <- ifelse(is.na(train$BsmtFin.Type.2), "No Basement", train$BsmtFin.Type.2)
+train$Pool.QC <- ifelse(is.na(train$Pool.QC), "No Pool", train$Pool.QC)
+train$Garage.Type <- ifelse(is.na(train$Garage.Type), "No Garage", train$Garage.Type)
+train$Garage.Finish <- ifelse(is.na(train$Garage.Finish), "No Garage", train$Garage.Finish)
+train$Garage.Qual <- ifelse(is.na(train$Garage.Qual), "No Garage", train$Garage.Qual)
+train$Garage.Cond <- ifelse(is.na(train$Garage.Cond), "No Garage", train$Garage.Cond)
+train$Fence <- ifelse(is.na(train$Fence), "No Fence", train$Fence)
+train$Misc.Feature <- ifelse(is.na(train$Misc.Feature), "None", train$Misc.Feature)
+```
+
+Testing Data: replace categorical NA with more descriptive value
+```{r}
+test$Alley <- ifelse(is.na(test$Alley), "None", test$Alley)
+test$Fireplace.Qu <- ifelse(is.na(test$Fireplace.Qu), "None", test$Fireplace.Qu)
+test$Bsmt.Qual <- ifelse(is.na(test$Bsmt.Qual), "No Basement", test$Bsmt.Qual)
+test$Bsmt.Cond <- ifelse(is.na(test$Bsmt.Cond), "No Basement", test$Bsmt.Cond)
+test$Bsmt.Exposure <- ifelse(is.na(test$Bsmt.Exposure), "No Basement", test$Bsmt.Exposure)
+test$BsmtFin.Type.1 <- ifelse(is.na(test$BsmtFin.Type.1), "No Basement", test$BsmtFin.Type.1)
+test$BsmtFin.Type.2 <- ifelse(is.na(test$BsmtFin.Type.2), "No Basement", test$BsmtFin.Type.2)
+test$Pool.QC <- ifelse(is.na(test$Pool.QC), "No Pool", test$Pool.QC)
+test$Garage.Type <- ifelse(is.na(test$Garage.Type), "No Garage", test$Garage.Type)
+test$Garage.Finish <- ifelse(is.na(test$Garage.Finish), "No Garage", test$Garage.Finish)
+test$Garage.Qual <- ifelse(is.na(test$Garage.Qual), "No Garage", test$Garage.Qual)
+test$Garage.Cond <- ifelse(is.na(test$Garage.Cond), "No Garage", test$Garage.Cond)
+test$Fence <- ifelse(is.na(test$Fence), "No Fence", test$Fence)
+test$Misc.Feature <- ifelse(is.na(test$Misc.Feature), "None", test$Misc.Feature)
+```
+
+Next, the continuous NAs were imputed with the median value.
+
+##### Impute Continuous Nulls
+
+Training Data: impute missing values with the median
+```{r}
+train$Lot.Frontage[is.na(train$Lot.Frontage)]<-median(train$Lot.Frontage,na.rm=TRUE)
+train$Garage.Yr.Blt[is.na(train$Garage.Yr.Blt)]<-median(train$Garage.Yr.Blt,na.rm=TRUE)
+train$Mas.Vnr.Area[is.na(train$Mas.Vnr.Area)]<-median(train$Mas.Vnr.Area,na.rm=TRUE)
+train$Bsmt.Full.Bath[is.na(train$Bsmt.Full.Bath)]<-median(train$Bsmt.Full.Bath,na.rm=TRUE)
+train$Bsmt.Half.Bath[is.na(train$Bsmt.Half.Bath)]<-median(train$Bsmt.Half.Bath,na.rm=TRUE)
+train$BsmtFin.SF.1[is.na(train$BsmtFin.SF.1)]<-median(train$BsmtFin.SF.1,na.rm=TRUE)
+train$BsmtFin.SF.2[is.na(train$BsmtFin.SF.2)]<-median(train$BsmtFin.SF.2,na.rm=TRUE)
+train$Bsmt.Unf.SF[is.na(train$Bsmt.Unf.SF)]<-median(train$Bsmt.Unf.SF,na.rm=TRUE)
+train$Total.Bsmt.SF[is.na(train$Total.Bsmt.SF)]<-median(train$Total.Bsmt.SF,na.rm=TRUE)
+train$Garage.Cars[is.na(train$Garage.Cars)]<-median(train$Garage.Cars,na.rm=TRUE)
+train$Garage.Area[is.na(train$Garage.Area)]<-median(train$Garage.Area,na.rm=TRUE)
+```
+
+Test Data: impute missing values with the median
+```{r}
+test$Lot.Frontage[is.na(test$Lot.Frontage)]<-median(test$Lot.Frontage,na.rm=TRUE)
+test$Garage.Yr.Blt[is.na(test$Garage.Yr.Blt)]<-median(test$Garage.Yr.Blt,na.rm=TRUE)
+test$Mas.Vnr.Area[is.na(test$Mas.Vnr.Area)]<-median(test$Mas.Vnr.Area,na.rm=TRUE)
+test$Bsmt.Full.Bath[is.na(test$Bsmt.Full.Bath)]<-median(test$Bsmt.Full.Bath,na.rm=TRUE)
+test$Bsmt.Half.Bath[is.na(test$Bsmt.Half.Bath)]<-median(test$Bsmt.Half.Bath,na.rm=TRUE)
+test$BsmtFin.SF.1[is.na(test$BsmtFin.SF.1)]<-median(test$BsmtFin.SF.1,na.rm=TRUE)
+test$BsmtFin.SF.2[is.na(test$BsmtFin.SF.2)]<-median(test$BsmtFin.SF.2,na.rm=TRUE)
+test$Bsmt.Unf.SF[is.na(test$Bsmt.Unf.SF)]<-median(test$Bsmt.Unf.SF,na.rm=TRUE)
+test$Total.Bsmt.SF[is.na(test$Total.Bsmt.SF)]<-median(test$Total.Bsmt.SF,na.rm=TRUE)
+test$Garage.Cars[is.na(test$Garage.Cars)]<-median(test$Garage.Cars,na.rm=TRUE)
+test$Garage.Area[is.na(test$Garage.Area)]<-median(test$Garage.Area,na.rm=TRUE)
+```
+
+No null values for train or test set
+```{r}
+sapply(train, function(y) sum(length(which(is.na(y)))))
+```
+
+```{r}
+sapply(test, function(y) sum(length(which(is.na(y)))))
+```
+
+The following identifies the columns that could have problematic encoding. The goal is to decrease the number of predictors by eliminating sparse categories and encoding ordinal variables numerically. This is explained for each category.
+
+##### MS Subclass
+
+Change type of MS Subclass to Factor
+```{r}
+train$MS.SubClass <- as.factor(train$MS.SubClass)
+test$MS.SubClass <- as.factor(test$MS.SubClass)
+```
+
+All except RL, RM, and FV are infrequent for MS Zoning, so include these and an "other" category.
+```{r}
+table(train$MS.Zoning)
+```
+
+##### MS Zoning
+
+```{r}
+train$MS.Zoning <- ifelse(train$MS.Zoning %in% c("A (agr)", "C (all)", "I (all)", "RH", "RM"), "other", train$MS.Zoning)
+test$MS.Zoning <- ifelse(test$MS.Zoning %in% c("A (agr)", "C (all)", "I (all)", "RH", "RM"), "other", test$MS.Zoning)
+```
+
+```{r}
+table(train$MS.Zoning)
+```
+
+##### Alley
+
+Dummy Variable for has.alley: seems unlikely type of alley matters, so drop original alley column
+```{r}
+train$Has.Alley <- as.factor(ifelse(train$Alley == "None", 0, 1))
+test$Has.Alley <- as.factor(ifelse(test$Alley == "None", 0, 1))
+train <- select(train, -Alley)
+test <- select(test, -Alley)
+```
+
+```{r}
+table(train$has.alley)
+```
+
+##### Lot.Shape
+
+Lot Shape is ordinal, so we want to have values that are numeric to represent the ordering.
+```{r}
+train$Lot.Shape <- case_when(train$Lot.Shape == "Reg" ~ 0,
+                             train$Lot.Shape == "IR1" ~ 1,
+                             train$Lot.Shape == "IR2" ~ 2,
+                             train$Lot.Shape == "IR3" ~ 3)
+test$Lot.Shape <- case_when(test$Lot.Shape == "Reg" ~ 0,
+                             test$Lot.Shape == "IR1" ~ 1,
+                             test$Lot.Shape == "IR2" ~ 2,
+                             test$Lot.Shape == "IR3" ~ 3)
+```
+
+#### Lot Config
+
+```{r}
+table(train$Lot.Config)
+```
+
+Dummy for Inside lot or not, as that is the most frequent value.
+```{r}
+train$Lot.Config <- ifelse(train$Lot.Config == "Inside", "Inside", "other")
+test$Lot.Config <- ifelse(test$Lot.Config == "Inside", "Inside", "other")
+```
+
+```{r}
+table(train$Lot.Config)
+```
+
+##### Land Slope
+
+Again, Land Slope in ordinal, so encode appropriately.
+```{r}
+table(train$Land.Slope)
+```
+
+```{r}
+train$Land.Slope <- case_when(train$Land.Slope == "Gtl" ~ 0,
+                              train$Land.Slope == "Mod" ~ 1,
+                              train$Land.Slope == "Sev" ~ 2)
+test$Land.Slope <- case_when(test$Land.Slope == "Gtl" ~ 0,
+                              test$Land.Slope == "Mod" ~ 1,
+                              test$Land.Slope == "Sev" ~ 2)
+```
+
+
+##### Condition.1
+
+Condition 1 has mostly normal values, so include a dummy for normal or not.
+```{r}
+table(train$Condition.1)
+```
+
+```{r}
+train$Condition.1 <- ifelse(train$Condition.1 == "Norm", "norm", "other")
+test$Condition.1 <- ifelse(test$Condition.1 == "Norm", "norm", "other")
+```
+
+```{r}
+table(train$Condition.1)
+```
+
+##### Condition.2
+
+Condition 2 has almost all normal values, so it will include only a dummy variable for normal or not.
+```{r}
+table(train$Condition.2)
+```
+
+```{r}
+train$Condition.2 <- as.factor(ifelse(train$Condition.2 == "Norm", "norm", "other"))
+test$Condition.2 <- as.factor(ifelse(test$Condition.2 == "Norm", "norm", "other"))
+```
+
+```{r}
+table(train$Condition.2)
+```
+
+##### Roof Style
+
+Only Gable and Hip have significant numbers, so we can include an "other" category for the rest.
+```{r}
+train$Roof.Style <- ifelse(train$Roof.Style %in% c("Flat", "Gambrel", "Mansard", "Shed"), "other", train$Roof.Style)
+test$Roof.Style <- ifelse(test$Roof.Style %in% c("Flat", "Gambrel", "Mansard", "Shed"), "other", train$Roof.Style)
+```
+
+```{r}
+table(train$Roof.Style)
+```
+
+###### Roof Matl
+
+```{r}
+table(train$Roof.Matl)
+```
+
+Include dummy variable for CompShg, as it is the only significant quantity
+```{r}
+train$Roof.Matl <- ifelse(train$Roof.Matl == "CompShg", "CompShg", "other")
+test$Roof.Matl <- ifelse(test$Roof.Matl == "CompShg", "CompShg", "other")
+```
+
+```{r}
+table(train$Roof.Matl)
+```
+
+##### Exterior 1
+
+Mostly Vinyl, HdBoard, and Plywood, so include these and a dummy for others
+```{r}
+table(train$Exterior.1st)
+```
+
+```{r}
+train$Exterior.1st <- ifelse(train$Exterior.1st %in% c("VinylSd", "HdBoard", "Plywood"), train$Exterior.1st, "other")
+test$Exterior.1st <- ifelse(test$Exterior.1st %in% c("VinylSd", "HdBoard", "Plywood"), test$Exterior.1st, "other")
+```
+
+```{r}
+table(train$Exterior.1st)
+```
+
+##### Exterior 2
+
+Similar to exterior 1, but CmentBd, HdBoard, MetalSd, Plywood, VinylSd, and Wd Sdng are high in frequency.
+```{r}
+table(train$Exterior.2nd)
+```
+
+```{r}
+train$Exterior.2nd <- ifelse(train$Exterior.2nd %in% c("CmentBd", "HdBoard", "MetalSd", "Plywood", "VinylSd", "Wd Sdng"), train$Exterior.2nd, "other")
+test$Exterior.2nd <- ifelse(test$Exterior.2nd %in% c("CmentBd", "HdBoard", "MetalSd", "Plywood", "VinylSd", "Wd Sdng"), test$Exterior.2nd, "other")
+```
+
+```{r}
+table(train$Exterior.2nd)
+```
+
+##### Masonry Vnr Type
+
+The only significant values are BrkFace and None. Include other for the rest.
+```{r}
+table(train$Mas.Vnr.Type)
+```
+
+```{r}
+train$Mas.Vnr.Type <- ifelse(train$Mas.Vnr.Type %in% c("BrkFace", "None"), train$Mas.Vnr.Type, "other")
+test$Mas.Vnr.Type <- ifelse(test$Mas.Vnr.Type %in% c("BrkFace", "None"), test$Mas.Vnr.Type, "other")
+```
+
+```{r}
+table(train$Mas.Vnr.Type)
+```
+
+##### Exter Qual
+
+```{r}
+table(train$Exter.Qual)
+```
+
+
+Again, ordinal, so encode appropriately.
+```{r}
+train$Exter.Qual <- case_when(train$Exter.Qual == "Ex" ~ 4,
+                              train$Exter.Qual == "Gd" ~ 3,
+                              train$Exter.Qual == "TA" ~ 2,
+                              train$Exter.Qual == "Fa" ~ 1,
+                              train$Exter.Qual == "Po" ~ 0)
+test$Exter.Qual <- case_when(test$Exter.Qual == "Ex" ~ 4,
+                              test$Exter.Qual == "Gd" ~ 3,
+                              test$Exter.Qual == "TA" ~ 2,
+                              test$Exter.Qual == "Fa" ~ 1,
+                              test$Exter.Qual == "Po" ~ 0)
+```
+
+```{r}
+table(train$Exter.Qual)
+```
+
+##### Foundation
+
+Slab, Stone, and Wood are infrequent, so replace those with other.
+```{r}
+table(train$Foundation)
+```
+
+```{r}
+train$Foundation <- ifelse(train$Foundation %in% c("BrkTil", "CBlock", "PConc"), train$Foundation, "other")
+test$Foundation <- ifelse(test$Foundation %in% c("BrkTil", "CBlock", "PConc"), test$Foundation, "other")
+```
+
+```{r}
+table(train$Foundation)
+```
+
+##### Create Dummy Variable for whether house has a basement
+
+```{r}
+train$Has.Basement <- ifelse(train$Bsmt.Qual == "No Basement", 0, 1)
+test$Has.Basement <- ifelse(test$Bsmt.Qual == "No Basement", 0, 1)
+```
+
+
+##### Bsmt Qual
+
+```{r}
+train$Bsmt.Qual <- ifelse(train$Bsmt.Qual == "", "No Basement", train$Bsmt.Qual)
+test$Bsmt.Qual <- ifelse(test$Bsmt.Qual == "", "No Basement", test$Bsmt.Qual)
+table(train$Bsmt.Qual)
+```
+
+
+Again, Ordinal. This time, not having a basement is zero, as that seems to make sense in the heirarchy.
+```{r}
+train$Bsmt.Qual <- case_when(train$Bsmt.Qual == "Ex" ~ 5,
+                             train$Bsmt.Qual == "Gd" ~ 4,
+                             train$Bsmt.Qual == "TA" ~ 3,
+                             train$Bsmt.Qual == "Fa" ~ 2,
+                             train$Bsmt.Qual == "Po" ~ 1,
+                             train$Bsmt.Qual == "No Basement" ~ 0)
+test$Bsmt.Qual <- case_when(test$Bsmt.Qual == "Ex" ~ 5,
+                             test$Bsmt.Qual == "Gd" ~ 4,
+                             test$Bsmt.Qual == "TA" ~ 3,
+                             test$Bsmt.Qual == "Fa" ~ 2,
+                             test$Bsmt.Qual == "Po" ~ 1,
+                             test$Bsmt.Qual == "No Basement" ~ 0)
+```
+
+```{r}
+table(train$Bsmt.Qual)
+```
+
+
+##### Bsmt Cond
+
+Again, ordinal, and represent no basement as zero.
+```{r}
+train$Bsmt.Cond <- ifelse(train$Bsmt.Cond == "", "No Basement", train$Bsmt.Cond)
+test$Bsmt.Cond <- ifelse(test$Bsmt.Cond == "", "No Basement", test$Bsmt.Cond)
+table(train$Bsmt.Cond)
+```
+
+```{r}
+train$Bsmt.Cond <- case_when(train$Bsmt.Cond == "Ex" ~ 5,
+                             train$Bsmt.Cond == "Gd" ~ 4,
+                             train$Bsmt.Cond == "TA" ~ 3,
+                             train$Bsmt.Cond == "Fa" ~ 2,
+                             train$Bsmt.Cond == "Po" ~ 1,
+                             train$Bsmt.Cond == "No Basement" ~ 0)
+test$Bsmt.Cond <- case_when(test$Bsmt.Cond == "Ex" ~ 5,
+                             test$Bsmt.Cond == "Gd" ~ 4,
+                             test$Bsmt.Cond == "TA" ~ 3,
+                             test$Bsmt.Cond == "Fa" ~ 2,
+                             test$Bsmt.Cond == "Po" ~ 1,
+                             test$Bsmt.Cond == "No Basement" ~ 0)
+```
+
+```{r}
+table(train$Bsmt.Cond)
+```
+
+##### Bsmt Exposure
+
+Again, ordinal with No Basement as 0.
+```{r}
+train$Bsmt.Exposure <- ifelse(train$Bsmt.Exposure == "", "No Basement", train$Bsmt.Exposure)
+test$Bsmt.Exposure <- ifelse(test$Bsmt.Exposure == "", "No Basement", test$Bsmt.Exposure)
+table(train$Bsmt.Exposure)
+```
+
+```{r}
+train$Bsmt.Exposure <- case_when(train$Bsmt.Exposure == "Gd" ~ 4,
+                                 train$Bsmt.Exposure == "Av" ~ 3,
+                                 train$Bsmt.Exposure == "Mn" ~ 2,
+                                 train$Bsmt.Exposure == "No" ~ 1,
+                                 train$Bsmt.Exposure == "No Basement" ~ 0)
+test$Bsmt.Exposure <- case_when(test$Bsmt.Exposure == "Gd" ~ 4,
+                                 test$Bsmt.Exposure == "Av" ~ 3,
+                                 test$Bsmt.Exposure == "Mn" ~ 2,
+                                 test$Bsmt.Exposure == "No" ~ 1,
+                                 test$Bsmt.Exposure == "No Basement" ~ 0)
+```
+
+```{r}
+table(train$Bsmt.Exposure)
+```
+
+##### BsmtFin Type 2
+
+Although Type 1 had an even distribution, type 2 has largely unfinished.
+```{r}
+table(train$BsmtFin.Type.2)
+```
+
+```{r}
+train$BsmtFin.Type.2 <- ifelse(train$BsmtFin.Type.2 == "Unf", "Unf", "other")
+test$BsmtFin.Type.2 <- ifelse(test$BsmtFin.Type.2 == "Unf", "Unf", "other")
+```
+
+```{r}
+table(train$BsmtFin.Type.2)
+```
+
+##### Heating
+
+Dummy variable for GasA
+```{r}
+table(train$Heating)
+```
+
+```{r}
+train$Heating <- ifelse(train$Heating == "GasA", "GasA", "other")
+test$Heating <- ifelse(test$Heating == "GasA", "GasA", "other")
+```
+
+```{r}
+table(train$Heating)
+```
+
+##### Heating QC
+
+Ordinal, so encode appropriately.
+```{r}
+table(train$Heating.QC)
+```
+
+
+```{r}
+train$Heating.QC <- case_when(train$Heating.QC == "Ex" ~ 4,
+                              train$Heating.QC == "Gd" ~ 3,
+                              train$Heating.QC == "TA" ~ 2,
+                              train$Heating.QC == "Fa" ~ 1,
+                              train$Heating.QC == "Po" ~ 0)
+test$Heating.QC <- case_when(test$Heating.QC == "Ex" ~ 4,
+                              test$Heating.QC == "Gd" ~ 3,
+                              test$Heating.QC == "TA" ~ 2,
+                              test$Heating.QC == "Fa" ~ 1,
+                              test$Heating.QC == "Po" ~ 0)
+```
+
+```{r}
+table(train$Heating.QC)
+```
+
+##### Electrical
+
+Only include Sbrkr or other.
+```{r}
+table(train$Electrical)
+```
+
+```{r}
+train$Electrical <- ifelse(train$Electrical == "SBrkr", "SBrkr", "other")
+test$Electrical <- ifelse(test$Electrical == "SBrkr", "SBrkr", "other")
+```
+
+```{r}
+table(train$Electrical)
+```
+
+```{r}
+train$Kitchen.Qual <- case_when(train$Kitchen.Qual == "Ex" ~ 4,
+                                train$Kitchen.Qual == "Gd" ~ 3,
+                                train$Kitchen.Qual == "TA" ~ 2,
+                                train$Kitchen.Qual == "Fa" ~ 1,
+                                train$Kitchen.Qual == "Po" ~ 0)
+test$Kitchen.Qual <- case_when(test$Kitchen.Qual == "Ex" ~ 4,
+                                test$Kitchen.Qual == "Gd" ~ 3,
+                                test$Kitchen.Qual == "TA" ~ 2,
+                                test$Kitchen.Qual == "Fa" ~ 1,
+                                test$Kitchen.Qual == "Po" ~ 0)
+```
+
+```{r}
+table(train$Kitchen.Qual)
+```
+
+##### Functional
+
+Dummy variable for functionality less than typical
+```{r}
+table(train$Functional)
+```
+
+```{r}
+train$Functional <- ifelse(train$Functional == "Typ", "Typ", "BelowTyp")
+test$Functional <- ifelse(test$Functional == "Typ", "Typ", "BelowTyp")
+```
+
+```{r}
+table(train$Functional)
+```
+
+##### Create Dummy Variable for has fireplace
+
+```{r}
+train$Has.Fireplace <- ifelse(train$Fireplace.Qu == "None", 1, 0)
+test$Has.Fireplace <- ifelse(test$Fireplace.Qu == "None", 1, 0)
+```
+
+##### Fireplace Qu
+
+```{r}
+train$Fireplace.Qu <- case_when(train$Fireplace.Qu == "Ex" ~ 5,
+                                train$Fireplace.Qu == "Gd" ~ 4,
+                                train$Fireplace.Qu == "TA" ~ 3,
+                                train$Fireplace.Qu == "Fa" ~ 2,
+                                train$Fireplace.Qu == "Po" ~ 1,
+                                train$Fireplace.Qu == "None" ~ 0)
+test$Fireplace.Qu <- case_when(test$Fireplace.Qu == "Ex" ~ 5,
+                                test$Fireplace.Qu == "Gd" ~ 4,
+                                test$Fireplace.Qu == "TA" ~ 3,
+                                test$Fireplace.Qu == "Fa" ~ 2,
+                                test$Fireplace.Qu == "Po" ~ 1,
+                                test$Fireplace.Qu == "None" ~ 0)
+```
+
+```{r}
+table(train$Fireplace.Qu)
+```
+
+##### Dummy Variable for has garage
+
+```{r}
+train$Has.Garage <- ifelse(train$Garage.Type == "No Garage", 1, 0)
+test$Has.Garage <- ifelse(test$Garage.Type == "No Garage", 1, 0)
+```
+
+##### Garage Finish
+
+Ordinal, so encode accordingly.
+```{r}
+train$Garage.Finish <- ifelse(train$Garage.Finish == "", "No Garage", train$Garage.Finish)
+test$Garage.Finish <- ifelse(test$Garage.Finish == "", "No Garage", test$Garage.Finish)
+table(train$Garage.Finish)
+```
+
+```{r}
+train$Garage.Finish <- case_when(train$Garage.Finish == "Fin" ~ 3,
+                                 train$Garage.Finish == "RFn" ~ 2,
+                                 train$Garage.Finish == "Unf" ~ 1,
+                                 train$Garage.Finish == "No Garage" ~ 0)
+test$Garage.Finish <- case_when(test$Garage.Finish == "Fin" ~ 3,
+                                 test$Garage.Finish == "RFn" ~ 2,
+                                 test$Garage.Finish == "Unf" ~ 1,
+                                 test$Garage.Finish == "No Garage" ~ 0)
+```
+
+```{r}
+table(train$Garage.Finish)
+```
+
+##### Garage Quality
+
+```{r}
+train$Garage.Qual <- ifelse(train$Garage.Qual == "", "No Garage", train$Garage.Qual)
+test$Garage.Qual <- ifelse(test$Garage.Qual == "", "No Garage", test$Garage.Qual)
+table(train$Garage.Qual)
+```
+
+```{r}
+train$Garage.Qual <- case_when(train$Garage.Qual == "Ex" ~ 5,
+                               train$Garage.Qual == "Gd" ~ 4,
+                               train$Garage.Qual == "TA" ~ 3,
+                               train$Garage.Qual == "Fa" ~ 2,
+                               train$Garage.Qual == "Po" ~ 1,
+                               train$Garage.Qual == "No Garage" ~ 0)
+test$Garage.Qual <- case_when(test$Garage.Qual == "Ex" ~ 5,
+                               test$Garage.Qual == "Gd" ~ 4,
+                               test$Garage.Qual == "TA" ~ 3,
+                               test$Garage.Qual == "Fa" ~ 2,
+                               test$Garage.Qual == "Po" ~ 1,
+                               test$Garage.Qual == "No Garage" ~ 0)
+```
+
+```{r}
+table(train$Garage.Qual)
+```
+
+#### Paved Drive
+
+There are not many unpaved, so only include a dummy for paved or unpaved.
+```{r}
+table(train$Paved.Drive)
+```
+
+```{r}
+train$Paved.Drive <- ifelse(train$Paved.Drive == "Y", "Paved", "Unpaved")
+test$Paved.Drive <- ifelse(test$Paved.Drive == "Y", "Paved", "Unpaved")
+```
+
+```{r}
+table(train$Paved.Drive)
+```
+
+##### Pool Area and Quality don't appear relevant because most don't have a pool; create a dummy for having a pool instead
+
+```{r}
+train$Has.Pool <- ifelse(train$Pool.QC == "No Pool", 0, 1)
+test$Has.Pool <- ifelse(test$Pool.QC == "No Pool", 0, 1)
+```
+
+
+Drop columns:
+```{r}
+train <- select(train, -Pool.QC, -Pool.Area)
+test <- select(test, -Pool.QC, -Pool.Area)
+```
+
+##### Fence
+
+Ordinal, so encode appropriately with no fence as 0.
+```{r}
+table(train$Fence)
+```
+
+
+```{r}
+train$Fence <- case_when(train$Fence == "GdPrv" ~ 4,
+                         train$Fence == "MnPrv" ~ 3,
+                         train$Fence == "GdWo" ~ 2,
+                         train$Fence == "MnWw" ~ 1,
+                         train$Fence == "No Fence" ~ 0)
+test$Fence <- case_when(test$Fence == "GdPrv" ~ 4,
+                         test$Fence == "MnPrv" ~ 3,
+                         test$Fence == "GdWo" ~ 2,
+                         test$Fence == "MnWw" ~ 1,
+                         test$Fence == "No Fence" ~ 0)
+```
+
+```{r}
+table(train$Fence)
+```
+
+
+##### Misc Feature
+
+Create dummy for having a miscellaneous feature
+```{r}
+table(train$Misc.Feature)
+```
+
+```{r}
+train$Misc.Feature <- ifelse(train$Misc.Feature == "None", 0, 1)
+test$Misc.Feature <- ifelse(test$Misc.Feature == "None", 0, 1)
+```
+
+```{r}
+table(train$Misc.Feature)
+```
+
+##### Sale Type
+
+Eliminate sparse categories, those other than New and Wd
+```{r}
+table(train$Sale.Type)
+```
+
+```{r}
+train$Sale.Type <- ifelse(train$Sale.Type %in% c("New", "WD "), train$Sale.Type, "other")
+test$Sale.Type <- ifelse(test$Sale.Type %in% c("New", "WD "), test$Sale.Type, "other")
+```
+
+```{r}
+table(train$Sale.Type)
+```
+
+##### Filter > 4000 sq. ft. observations
+
+```{r}
+train <- train[train$Gr.Liv.Area < 4000,]
+```
+
+##### Eliminate Irrelevant Variables
+
+Utilities
+```{r}
+table(train$Utilities)
+```
+
+```{r}
+train <- train %>% select(-Utilities)
+test <- test %>% select(-Utilities)
+```
+
+Wood Deck Sq Ft.: many zero values, so include a dummy instead
+
+```{r}
+length(train$Wood.Deck.SF[train$Wood.Deck.SF == 0])
+```
+
+```{r}
+train$Has.Wood.Deck <- ifelse(train$Wood.Deck.SF == 0, 0, 1)
+test$Has.Wood.Deck <- ifelse(test$Wood.Deck.SF == 0, 0, 1)
+```
+
+Open Porch Sq. Ft.: Same
+
+```{r}
+length(train$Open.Porch.SF[train$Open.Porch.SF == 0])
+```
+
+```{r}
+train$Has.Open.Porch <- ifelse(train$Open.Porch.SF == 0, 0, 1)
+test$Has.Open.Porch <- ifelse(test$Open.Porch.SF == 0, 0, 1)
+```
+
+Enclosed Porch
+
+```{r}
+length(train$Enclosed.Porch[train$Enclosed.Porch == 0])
+```
+
+```{r}
+train$Has.Enclosed.Porch <- ifelse(train$Enclosed.Porch == 0, 0, 1)
+test$Has.Enclosed.Porch <- ifelse(test$Enclosed.Porch == 0, 0, 1)
+```
+
+3-Ssn Porch
+```{r}
+length(train$X3Ssn.Porch[train$X3Ssn.Porch == 0])
+```
+
+```{r}
+train$Has.X3Ssn.Porch <- ifelse(train$X3Ssn.Porch == 0 , 0, 1)
+test$Has.X3Ssn.Porch <- ifelse(test$X3Ssn.Porch == 0 , 0, 1)
+```
+
+Screen Porch
+```{r}
+length(train$Screen.Porch[train$Screen.Porch == 0])
+```
+
+```{r}
+train$Has.Screen.Porch <- ifelse(train$Screen.Porch == 0, 0, 1)
+test$Has.Screen.Porch <- ifelse(test$Screen.Porch == 0, 0, 1)
+```
+
+Remove Variables:
+
+```{r}
+train <- train %>% select(-Wood.Deck.SF, -Open.Porch.SF, -Enclosed.Porch, -X3Ssn.Porch, -Screen.Porch)
+test <- test %>% select(-Wood.Deck.SF, -Open.Porch.SF, -Enclosed.Porch, -X3Ssn.Porch, -Screen.Porch)
+```
+
+### EDA Visualization
+
+We also found that features relating to square footage are correlated to both each other and SalePrice. Additionally, homes with more stories had higher sale prices.
+
+```{r}
+# create df of only continuous predictors
+ames.cont <- train %>% 
+  dplyr::select(Lot.Frontage, Lot.Area, Mas.Vnr.Area, BsmtFin.SF.1, BsmtFin.SF.2, Bsmt.Unf.SF, Total.Bsmt.SF, X1st.Flr.SF, X2nd.Flr.SF, Low.Qual.Fin.SF, Gr.Liv.Area, Garage.Area, Misc.Val, SalePrice)
+
+# correlation matrix
+corrplot(cor(ames.cont))
+```
+
+```{r}
+correlations <- as.data.frame(as.table(cor(ames.cont))) %>% 
+  rename(correlation = Freq) %>% 
+  filter(correlation < -0.25 | correlation > 0.5 & correlation != 1) %>% 
+  arrange(correlation)
+
+correlations[seq_len(nrow(correlations)) %% 2 == 1,]
+```
+
+The following plot displays the increase in SalePrice as 1st Floor Sq Footage increases.
+
+```{r}
+ggplot(train, aes(x = X1st.Flr.SF, y = SalePrice)) + geom_point() + ggtitle("1st Floor Square Footage vs Sale Price")
+```
+
+
+Code to create model matrix that works for categories that are in the training data but not the test data. For these categories, a columns of 0's is included. This does not impact the results but ensures that the predict function can be used.
+```{r, message = FALSE}
+train <- as.data.frame(unclass(train), stringsAsFactors = TRUE)
+test <- as.data.frame(unclass(test), stringsAsFactors = TRUE)
+x_train = model.matrix(SalePrice~., train)[,-1]
+x_test = model.matrix(SalePrice~., test)[,-1]
+y_train = train$SalePrice
+y_test = test$SalePrice
+tr <- data.frame(x_train)
+te <- data.frame(x_test)
+# find columns not in other data set
+for (col in colnames(tr)) {
+  if (!(col %in% colnames(te))) {
+    print(col)
+    te[[col]] <- rep(0, nrow(te))
+  }
+}
+for (col in colnames(te)) {
+  if (!(col %in% colnames(tr))) {
+    print(col)
+    tr[[col]] <- rep(0, nrow(tr))
+  }
+}
+# make sure columns are aligned the same
+col_str <- dput(colnames(tr))
+te <- te %>% select(col_str)
+# makes model.matrix from data frame
+x_train <- makeModelMatrixFromDataFrame(tr, drop = FALSE)
+x_test <- makeModelMatrixFromDataFrame(te, drop = FALSE)
+```
+
+# Analysis
+
+### LASSO
+
+Train LASSO model on train data, test with test data:
+
+```{r}
+# fit a cross-validated model
+lasso.cv = cv.glmnet(x_train, y_train,alpha=1)
+lambda.cv = lasso.cv$lambda.min
+plot(lasso.cv)
+```
+
+```{r}
+# fit model with specific lambda
+lasso.best = glmnet(x_train, y_train,alpha=1,lambda=lambda.cv)
+lasso.coef <- data.frame(as.matrix(coef(lasso.best))) %>% arrange(desc(abs(s0)))
+head(lasso.coef, 10)
+```
+
+```{r}
+# look at model performance on training data
+preds.train.lasso = predict(lasso.best, newx = x_train)
+residuals.train = y_train - preds.train.lasso
+residuals.squared.train = residuals.train^2
+MSE.train = mean(residuals.squared.train)
+RSS.train = sum(residuals.squared.train)
+paste("Training MSE: ", MSE.train)
+paste("Training RSS: ", RSS.train)
+```
+
+```{r}
+# plot fitted values vs residuals. This would be better if we knew stdev in order to calcualte standardized residuals but no closed from available for this 
+plot(preds.train.lasso,residuals.train, xlab = "Predicted Values", ylab = "Residuals", main = "LASSO Train", pch = 16, col = "red")
+```
+
+```{r}
+# evaluate model performance on test data
+preds.lasso = predict(lasso.best, newx = x_test)
+residuals = y_test - preds.lasso
+residuals.squared = residuals^2
+MSE_LASSO = mean(residuals.squared)
+RSS_LASSO = sum(residuals.squared)
+paste("MSE: ", MSE_LASSO)
+paste("RSS: ", RSS_LASSO)
+```
+
+```{r}
+# plot fitted values vs residuals
+plot(preds.lasso, residuals, xlab = "Predicted Values", ylab = "Residuals", main = "LASSO Test", pch = 16, col = "red")
+```
+
+
+Appears that model works well overall but we get extraneous results when our predicted house prices are really high. There is one data point that makes the predicted values. It seems worthwhile to check the MSE and plot without this outlier.
+
+```{r}
+MSE_LASSO_removed = mean(residuals.squared[-which.min(residuals)])
+RSS_LASSO_removed = sum(residuals.squared[-which.min(residuals)])
+paste("MSE: ", MSE_LASSO_removed)
+paste("RSS: ", RSS_LASSO_removed)
+```
+
+```{r}
+plot(preds.lasso[-447], residuals[-447], xlab = "Predicted Values", ylab = "Residuals", main = "LASSO Test", pch = 16, col = "red")
+```
+
+There looks to be some higher squared residuals among the higher predictions, but overall it doesn't seem too concerning. It makes sense that the model would predict sale prices around the median more accurately.
+
+For the future, it seems to make sense to remove the outlier data point. For some reason, this home was priced far below what would be expected. This should give us a better representation of the results.
+
+```{r}
+x_test <- x_test[-which.min(residuals),]
+y_test <- y_test[-which.min(residuals)]
+test <- test[-which.min(residuals),]
+preds.lasso <- preds.lasso[-which.min(residuals)]
+MSE_LASSO <- MSE_LASSO_removed
+RSS_LASSO <- RSS_LASSO_removed
+```
+
+
+### Ridge
+
+```{r}
+ridge_cv=cv.glmnet(x_train,y_train,alpha=0)
+plot(ridge_cv)
+plot(ridge_cv$lambda,ridge_cv$cvm)
+```
+
+```{r}
+lambda_cv=ridge_cv$lambda.min
+paste0("Best Lambda: ", lambda_cv)
+```
+
+```{r}
+ridge.best = glmnet(x_train,y_train,alpha=0,lambda=lambda_cv)
+ridge.coef <- data.frame(as.matrix(coef(ridge.best))) %>% arrange(desc(abs(s0)))
+head(ridge.coef, 10)
+```
+
+```{r}
+preds.ridge = predict(ridge.best, newx=x_test)
+residuals = y_test - preds.ridge
+MSE_Ridge <- mean((residuals)^2)
+RSS_Ridge <- sum((residuals)^2)
+paste0("MSE Ridge: ", MSE_Ridge)
+paste0("RSS Ridge: ", RSS_Ridge)
+```
+
+```{r}
+# plot fitted values vs residuals
+plot(preds.ridge, residuals, xlab = "Predicted Values", ylab = "Residuals", main = "Ridge Regression", pch = 16, col = "DarkGreen")
+```
+
+The predictions for Ridge Regression look similar to LASSO.
+
+```{r}
+predictions <- data.frame("LASSO" = as.vector(preds.lasso), "Ridge" = as.vector(preds.ridge))
+metrics <- data.frame("LASSO" = c(MSE_LASSO, RSS_LASSO, sqrt(MSE_LASSO)), "Ridge" = c(MSE_Ridge, RSS_Ridge, sqrt(MSE_Ridge)), row.names = c("MSE", "RSS", "sqrt(MSE)"))
+```
+
+
+Get Data Frame for Coefficients
+```{r}
+lasso.coef <- as.matrix(coef(lasso.best))
+ridge.coef <- as.matrix(coef(ridge.best))
+coefficients <- data.frame("Feature" = rownames(lasso.coef), "LASSO" = as.vector(lasso.coef), "Ridge" = as.vector(ridge.coef), "TrainingSD" = append(0, apply(x_train, 2, sd)), row.names = c())
+head(coefficients, 10)
+```
+
+
+### Random Forest
+
+```{r}
+ctrl.rf <- trainControl(method = 'cv', 
+                           number = 5,
+                           search = 'random',
+                           savePredictions = T)
+rf.mod <- train(SalePrice~., data = train, method = 'rf', trControl = ctrl.rf, tuneLength = 10, ntree = 500)
+print(rf.mod)
+plot(rf.mod)
+as.numeric(rf.mod$bestTune)
+```
+
+```{r}
+# train Random Forest
+test <- rbind(train[1,], test)
+test <- test[-1,]
+rf.ames = randomForest(SalePrice ~ ., data = train, mtry = as.numeric(rf.mod$bestTune), importance = TRUE)
+rf.pred = predict(rf.ames, newdata = test)
+```
+
+```{r}
+residuals <- test$SalePrice-rf.pred
+MSE_rf <- mean((residuals)^2)
+paste0("MSE_rf: ", MSE_rf)
+RSS_rf <- sum((residuals)^2)
+paste0("RSS_rf", RSS_rf)
+plot(rf.pred, residuals, xlab = "Predicted Values", ylab = "Residuals", main = "Random Forest", pch = 16, col = "violet")
+```
+
+```{r}
+importance <- importance(rf.ames)
+as.data.frame(importance) %>% arrange(desc(IncNodePurity))
+```
+
+```{r}
+dotchart(sort(importance[0:15,1]), main="%IncMSE")
+dotchart(sort(importance[0:15,2]), main="IncNodePurity")
+```
+
+```{r}
+predictions$RandomForest <- rf.pred
+metrics$RandomForest <- c(MSE_rf, RSS_rf, sqrt(MSE_rf))
+```
+
+### Gradient Boosting
+
+```{r, message = FALSE, warning = FALSE, trace = FALSE, results = "hide"}
+ctrl.gbm <- trainControl(method = 'cv', 
+                           number = 5,
+                           search = 'random',
+                           savePredictions = T)
+gbm.mod <- train(SalePrice~., data = train, method = 'gbm')
+print(gbm.mod)
+plot(gbm.mod)
+```
+
+```{r}
+gbm.mod$bestTune
+gbm.ames <- gbm(SalePrice ~ ., data = train, n.trees = as.numeric(gbm.mod$bestTune$n.trees), interaction.depth = as.numeric(gbm.mod$bestTune$interaction.depth), shrinkage = as.numeric(gbm.mod$bestTune$shrinkage), n.minobsinnode = as.numeric(gbm.mod$bestTune$n.minobsinnode))
+gbm.pred <- predict(gbm.ames, test)
+```
+
+
+```{r}
+residuals <- test$SalePrice-gbm.pred
+MSE_gbm <- mean((residuals)^2)
+paste0("MSE_rf: ", MSE_gbm)
+RSS_gbm <- sum((residuals)^2)
+paste0("RSS_rf: ", RSS_gbm)
+plot(gbm.pred, residuals, xlab = "Predicted Values", ylab = "Residuals", main = "Gradient Boosting", pch = 16, col = "darkblue")
+```
+
+The predictions for Gradient Boosting look similar to Random Forest.
+
+```{r}
+predictions$GradientBoost <- gbm.pred
+metrics$GradientBoost <- c(MSE_gbm, RSS_gbm, sqrt(MSE_gbm))
+```
+
+Feature Importances:
+
+```{r}
+s <- summary(gbm.ames)
+s[1:15,]
+```
+
+```{r}
+i <- data.frame(importance)
+importances <- data.frame("Feature" = rownames(i), "RandomForest" = i$X.IncMSE)
+importances <- importances %>% left_join(s, by = c("Feature" = "var")) %>% rename("GradientBoost" = "rel.inf") %>% replace_na(list(GradientBoost = 0))
+```
+
+```{r}
+predictions$Actual <- test$SalePrice
+```
+
+```{r}
+write.csv(predictions, "/Users/lukedinan/Documents/STAT 4620/STAT-4620-Project/predictions.csv")
+write.csv(metrics, "/Users/lukedinan/Documents/STAT 4620/STAT-4620-Project/metrics.csv")
+write.csv(importances, "/Users/lukedinan/Documents/STAT 4620/STAT-4620-Project/importances.csv")
+write.csv(coefficients, "/Users/lukedinan/Documents/STAT 4620/STAT-4620-Project/coefficients.csv")
+```
+
+
+
+
+
+
+
+
+
+
